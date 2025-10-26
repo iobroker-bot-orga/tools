@@ -1,0 +1,250 @@
+name: Copy Issues
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'Target repository (full URL or owner/repo format)'
+        required: true
+        type: string
+      source:
+        description: 'Source repository or issue (full URL or owner/repo format)'
+        required: true
+        type: string
+      force:
+        description: 'Force copy even if issue already exists'
+        required: false
+        type: boolean
+        default: false
+      include-closed:
+        description: 'Include closed issues'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  copy-issues:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Copy Issues
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const target = '${{ inputs.target }}';
+            const source = '${{ inputs.source }}';
+            const force = ${{ inputs.force }};
+            const includeClosed = ${{ inputs['include-closed'] }};
+            
+            // Helper function to parse repository from URL or short form
+            function parseRepo(input) {
+              // Check if it's a full GitHub URL
+              const urlMatch = input.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+              if (urlMatch) {
+                return { owner: urlMatch[1], repo: urlMatch[2].replace(/\.git$/, '') };
+              }
+              // Check if it's owner/repo format
+              const shortMatch = input.match(/^([^\/]+)\/([^\/]+)$/);
+              if (shortMatch) {
+                return { owner: shortMatch[1], repo: shortMatch[2] };
+              }
+              throw new Error(`Invalid repository format: ${input}`);
+            }
+            
+            // Helper function to parse issue URL
+            function parseIssueUrl(input) {
+              const match = input.match(/github\.com\/([^\/]+)\/([^\/]+)\/issues\/(\d+)/);
+              if (match) {
+                return {
+                  owner: match[1],
+                  repo: match[2],
+                  issue_number: parseInt(match[3])
+                };
+              }
+              return null;
+            }
+            
+            // Parse target repository
+            const targetRepo = parseRepo(target);
+            console.log(`Target repository: ${targetRepo.owner}/${targetRepo.repo}`);
+            
+            // Determine if source is a single issue or a repository
+            const singleIssue = parseIssueUrl(source);
+            let sourceRepo;
+            let issuesToProcess = [];
+            
+            if (singleIssue) {
+              console.log(`Processing single issue: ${singleIssue.owner}/${singleIssue.repo}#${singleIssue.issue_number}`);
+              const { data: issue } = await github.rest.issues.get({
+                owner: singleIssue.owner,
+                repo: singleIssue.repo,
+                issue_number: singleIssue.issue_number
+              });
+              issuesToProcess = [issue];
+              sourceRepo = { owner: singleIssue.owner, repo: singleIssue.repo };
+            } else {
+              // Parse source as repository
+              sourceRepo = parseRepo(source);
+              console.log(`Source repository: ${sourceRepo.owner}/${sourceRepo.repo}`);
+              
+              // Fetch issues from source repository
+              const state = includeClosed ? 'all' : 'open';
+              console.log(`Fetching ${state} issues from source repository...`);
+              
+              let page = 1;
+              let hasMore = true;
+              
+              while (hasMore) {
+                const { data: issues } = await github.rest.issues.listForRepo({
+                  owner: sourceRepo.owner,
+                  repo: sourceRepo.repo,
+                  state: state,
+                  per_page: 100,
+                  page: page
+                });
+                
+                if (issues.length === 0) {
+                  hasMore = false;
+                } else {
+                  // Filter out pull requests (GitHub API returns both issues and PRs)
+                  const actualIssues = issues.filter(issue => !issue.pull_request);
+                  issuesToProcess.push(...actualIssues);
+                  page++;
+                  if (issues.length < 100) {
+                    hasMore = false;
+                  }
+                }
+              }
+            }
+            
+            console.log(`Found ${issuesToProcess.length} issue(s) to process`);
+            
+            // Helper function to check if issue already exists in target
+            async function issueAlreadyExists(title, originalIssueUrl) {
+              let page = 1;
+              let hasMore = true;
+              
+              while (hasMore) {
+                const { data: existingIssues } = await github.rest.issues.listForRepo({
+                  owner: targetRepo.owner,
+                  repo: targetRepo.repo,
+                  state: 'all',
+                  per_page: 100,
+                  page: page
+                });
+                
+                if (existingIssues.length === 0) {
+                  hasMore = false;
+                } else {
+                  for (const issue of existingIssues) {
+                    if (issue.title === title && issue.body && issue.body.includes(originalIssueUrl)) {
+                      return true;
+                    }
+                  }
+                  page++;
+                  if (existingIssues.length < 100) {
+                    hasMore = false;
+                  }
+                }
+              }
+              return false;
+            }
+            
+            // Process each issue
+            for (let i = 0; i < issuesToProcess.length; i++) {
+              const issue = issuesToProcess[i];
+              const originalIssueUrl = issue.html_url;
+              
+              console.log(`\nProcessing issue #${issue.number}: ${issue.title}`);
+              
+              // Check if issue already exists (unless force is true)
+              if (!force) {
+                const exists = await issueAlreadyExists(issue.title, originalIssueUrl);
+                if (exists) {
+                  console.log(`Issue already exists in target repository, skipping...`);
+                  continue;
+                }
+              }
+              
+              // Build issue body
+              const originalCreatedAt = new Date(issue.created_at).toISOString();
+              const separator = '---';
+              
+              let body = `This issue has been copied from ${originalIssueUrl}\n\n`;
+              body += `original creator @${issue.user.login}\n\n`;
+              body += `originally created at ${originalCreatedAt}\n\n`;
+              body += `${separator}\n\n`;
+              body += issue.body || '';
+              
+              // Create new issue in target repository
+              console.log(`Creating issue in ${targetRepo.owner}/${targetRepo.repo}...`);
+              const { data: newIssue } = await github.rest.issues.create({
+                owner: targetRepo.owner,
+                repo: targetRepo.repo,
+                title: issue.title,
+                body: body
+              });
+              
+              console.log(`Created issue #${newIssue.number} in target repository`);
+              
+              // Fetch and copy comments
+              console.log(`Fetching comments for issue #${issue.number}...`);
+              let commentsPage = 1;
+              let hasMoreComments = true;
+              let allComments = [];
+              
+              while (hasMoreComments) {
+                const { data: comments } = await github.rest.issues.listComments({
+                  owner: sourceRepo.owner,
+                  repo: sourceRepo.repo,
+                  issue_number: issue.number,
+                  per_page: 100,
+                  page: commentsPage
+                });
+                
+                if (comments.length === 0) {
+                  hasMoreComments = false;
+                } else {
+                  allComments.push(...comments);
+                  commentsPage++;
+                  if (comments.length < 100) {
+                    hasMoreComments = false;
+                  }
+                }
+              }
+              
+              console.log(`Found ${allComments.length} comment(s) to copy`);
+              
+              // Copy each comment
+              for (const comment of allComments) {
+                const commentCreatedAt = new Date(comment.created_at).toISOString();
+                const commentBody = `originally commented by @${comment.user.login} at ${commentCreatedAt}\n\n${comment.body}`;
+                
+                await github.rest.issues.createComment({
+                  owner: targetRepo.owner,
+                  repo: targetRepo.repo,
+                  issue_number: newIssue.number,
+                  body: commentBody
+                });
+                
+                console.log(`Copied comment from @${comment.user.login}`);
+              }
+              
+              // Add final comment indicating copying is finished
+              await github.rest.issues.createComment({
+                owner: targetRepo.owner,
+                repo: targetRepo.repo,
+                issue_number: newIssue.number,
+                body: 'Copying finished.'
+              });
+              
+              console.log(`Finished copying issue #${issue.number}`);
+              
+              // Add delay between issues (except for the last one)
+              if (i < issuesToProcess.length - 1) {
+                console.log('Waiting 1 minute before processing next issue...');
+                await new Promise(resolve => setTimeout(resolve, 60000));
+              }
+            }
+            
+            console.log(`\nCompleted copying ${issuesToProcess.length} issue(s)`);
