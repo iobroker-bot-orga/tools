@@ -25,6 +25,9 @@ on:
 jobs:
   copy-issues:
     runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      contents: read
     steps:
       - name: Copy Issues
         uses: actions/github-script@v7
