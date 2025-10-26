@@ -243,6 +243,19 @@ jobs:
               
               console.log(`Finished copying issue #${issue.number}`);
               
+              // Add comment to original issue indicating it has been copied
+              console.log(`Adding comment to original issue #${issue.number}...`);
+              const commentBody = `This issue has been copied to repository '${targetRepo.owner}/${targetRepo.repo}' and further processing will happen at the new issue.\n\nLink to new issue: ${newIssue.html_url}\n\n---\n\n**DO NOT POST ANY NEW COMMENTS HERE - NEW COMMENTS WILL NOT BE PROCESSED**`;
+              
+              await github.rest.issues.createComment({
+                owner: sourceRepo.owner,
+                repo: sourceRepo.repo,
+                issue_number: issue.number,
+                body: commentBody
+              });
+              
+              console.log(`Added copy notification comment to original issue #${issue.number}`);
+              
               // Add delay between issues (except for the last one)
               if (i < issuesToProcess.length - 1) {
                 console.log('Waiting 1 minute before processing next issue...');
