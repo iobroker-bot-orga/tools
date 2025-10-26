@@ -122,6 +122,10 @@ jobs:
             
             console.log(`Found ${issuesToProcess.length} issue(s) to process`);
             
+            // Sort issues by issue number (ascending - oldest first)
+            issuesToProcess.sort((a, b) => a.number - b.number);
+            console.log(`Issues sorted by number (ascending order)`);
+            
             // Helper function to check if issue already exists in target
             async function issueAlreadyExists(title, originalIssueUrl) {
               let page = 1;
