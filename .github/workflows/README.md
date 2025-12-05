@@ -26,7 +26,9 @@ This workflow allows you to copy issues from one GitHub repository to another.
   - Original creation timestamp
   - All original content with formatting preserved
 - **Comment Copying**: All comments from the original issue are copied with attribution
+- **State Preservation**: If a closed issue is copied, the issue will also be closed in the target repository
 - **Rate Limiting**: Automatically adds a 1-minute delay between processing multiple issues to avoid hitting API rate limits
+- **Error Resilience**: Errors when adding comments to source issues are logged but do not abort processing
 
 ## Example
 
