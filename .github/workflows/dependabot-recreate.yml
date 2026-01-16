@@ -1,0 +1,111 @@
+name: Dependabot Recreate
+
+on:
+  workflow_dispatch:
+    inputs:
+      repository:
+        description: 'Target repository (full URL or owner/repo format)'
+        required: true
+        type: string
+
+jobs:
+  recreate-dependabot-prs:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: read
+    steps:
+      - name: Recreate Dependabot PRs
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.IOBBOT_GITHUB_TOKEN }}
+          script: |
+            const repository = '${{ inputs.repository }}';
+            
+            // Helper function to parse repository from URL or short form
+            function parseRepo(input) {
+              // Check if it's a full GitHub URL
+              const urlMatch = input.match(/github\.com\/([^\/]+)\/([^\/]+)/);
+              if (urlMatch) {
+                return { owner: urlMatch[1], repo: urlMatch[2].replace(/\.git$/, '') };
+              }
+              // Check if it's owner/repo format
+              const shortMatch = input.match(/^([^\/]+)\/([^\/]+)$/);
+              if (shortMatch) {
+                return { owner: shortMatch[1], repo: shortMatch[2] };
+              }
+              throw new Error(`Invalid repository format: ${input}`);
+            }
+            
+            // Parse target repository
+            const targetRepo = parseRepo(repository);
+            console.log(`Target repository: ${targetRepo.owner}/${targetRepo.repo}`);
+            
+            // Fetch all open pull requests
+            console.log('Fetching open pull requests...');
+            let allPRs = [];
+            let page = 1;
+            let hasMore = true;
+            
+            while (hasMore) {
+              const { data: prs } = await github.rest.pulls.list({
+                owner: targetRepo.owner,
+                repo: targetRepo.repo,
+                state: 'open',
+                per_page: 100,
+                page: page
+              });
+              
+              if (prs.length === 0) {
+                hasMore = false;
+              } else {
+                allPRs.push(...prs);
+                page++;
+                if (prs.length < 100) {
+                  hasMore = false;
+                }
+              }
+            }
+            
+            console.log(`Found ${allPRs.length} open pull request(s)`);
+            
+            // Filter PRs created by dependabot
+            const dependabotPRs = allPRs.filter(pr => {
+              const author = pr.user.login;
+              return author === 'dependabot[bot]' || author === 'dependabot';
+            });
+            
+            console.log(`Found ${dependabotPRs.length} pull request(s) created by dependabot`);
+            
+            if (dependabotPRs.length === 0) {
+              console.log('No dependabot PRs found. Exiting.');
+              return;
+            }
+            
+            // Add "@dependabot recreate" comment to each dependabot PR
+            for (let i = 0; i < dependabotPRs.length; i++) {
+              const pr = dependabotPRs[i];
+              console.log(`\nProcessing PR #${pr.number}: ${pr.title}`);
+              
+              try {
+                await github.rest.issues.createComment({
+                  owner: targetRepo.owner,
+                  repo: targetRepo.repo,
+                  issue_number: pr.number,
+                  body: '@dependabot recreate'
+                });
+                
+                console.log(`Added "@dependabot recreate" comment to PR #${pr.number}`);
+              } catch (error) {
+                console.log(`Error adding comment to PR #${pr.number}: ${error.message}`);
+                console.log('Continuing with processing...');
+              }
+              
+              // Add delay between PRs (except for the last one) to avoid rate limiting
+              if (i < dependabotPRs.length - 1) {
+                console.log('Waiting 5 seconds before processing next PR...');
+                await new Promise(resolve => setTimeout(resolve, 5000));
+              }
+            }
+            
+            console.log(`\nCompleted processing ${dependabotPRs.length} dependabot PR(s)`);
